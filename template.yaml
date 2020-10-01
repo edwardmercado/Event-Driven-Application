@@ -1,0 +1,171 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  event-driven-app
+
+  Sample SAM Template for event-driven-app
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+    Environment:
+      Variables:
+        US_DATA: "https://raw.githubusercontent.com/nytimes/covid-19-data/master/us.csv"
+        JH_DATA: "https://raw.githubusercontent.com/datasets/covid-19/master/data/time-series-19-covid-combined.csv"
+        TABLE_NAME: !Select [1, !Split ['/', !GetAtt DynamoDBDataTable.Arn]]
+        TOPIC_NAME: !Ref NotifyChangeSNSTopic
+    
+
+Resources:
+  
+  CloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties: 
+      ScheduleExpression: "cron(0 14 * * ? *)"
+      State:  "ENABLED"
+      Targets:
+      - 
+        Arn: !GetAtt CleanDataFunction.Arn
+        Id: CleanDataFunction
+
+  EventRuleInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CleanDataFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CloudWatchEventRule.Arn
+    
+  
+  CleanDataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.main
+      Role: !GetAtt LamdaRole.Arn
+      CodeUri: src/clean_data/
+      Runtime: python3.7
+      Timeout: 300
+      MemorySize: 192
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Select [1, !Split ['/', !GetAtt DynamoDBDataTable.Arn]]
+
+          
+  LamdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: DynamoDBActions
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+              - dynamodb:PutItem
+              - dynamodb:GetItem
+              - dynamodb:DescribeTable
+              - dynamodb:UpdateItem
+              - dynamodb:DescribeStream
+              - dynamodb:GetRecords
+              - dynamodb:GetShardIterator
+              - dynamodb:ListStreams
+              - dynamodb:Scan
+              Resource: '*'
+      - PolicyName: SNSActions
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+              - sns:*
+              Resource: '*'
+      - PolicyName: S3Actions
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+              - s3:*
+              Resource: '*'
+
+  # NotifyChangeDBFunction:
+  #   Type: AWS::Serverless::Function
+  #   Properties:
+  #     Handler: app.main
+  #     Role: !GetAtt LamdaRole.Arn
+  #     CodeUri: src/export/
+  #     Runtime: python3.7
+  #     Timeout: 300
+  #     MemorySize: 192
+  #     # Events:
+  #     #   DynamoDBEvent:
+  #     #     Type: DynamoDB
+  #     #     Properties:
+  #     #       Stream:
+  #     #         !GetAtt DynamoDBDataTable.StreamArn
+  #     #       StartingPosition: LATEST
+  #     #       BatchSize: 500
+
+  # ExportDatatoS3:
+  #   Type: AWS::Serverless::Function
+  #   Properties:
+  #     Handler: app.main
+  #     Role: !GetAtt LamdaRole.Arn
+  #     CodeUri: src/export_data/
+  #     Runtime: python3.7
+  #     Timeout: 300
+  #     MemorySize: 192
+  #     Events:
+  #       DynamoDBEvent:
+  #         Type: DynamoDB
+  #         Properties:
+  #           Stream:
+  #             !GetAtt DynamoDBDataTable.StreamArn
+  #           StartingPosition: LATEST
+  #           BatchSize: 500
+
+  DynamoDBDataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - 
+          AttributeName: "Date"
+          AttributeType: "S"
+      KeySchema:
+        -
+          AttributeName: "Date"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  NotifyChangeSNSTopic:
+    Type: AWS::SNS::Topic 
+
+  SNSTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotifyChangeSNSTopic
+      Protocol: email
+      Endpoint: edwardallenmercado@gmail.com
